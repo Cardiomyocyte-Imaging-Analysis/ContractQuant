@@ -42,11 +42,16 @@ function [TrackingDistance_um,PixelDistance,ContractionFrequency,median_max_FrSh
 
     cd(Path)
     
+   
+    
+    
+    
+    
     % ***************PARAMETER SETTING************
 
     PixelDistance = 0.16; %(um/pixel)
     SamplingInterval = 0.02; %(sec)
-    %Note SamplingInterval will be over-ridden by metadata if bio-formats
+    %Note SamplingInterval and PixelDistance will be over-ridden by metadata if bio-formats
     %metadata available from nd2 file.
     
     % Set the x and y coordinates for 2 tracking points 
@@ -90,8 +95,10 @@ function [TrackingDistance_um,PixelDistance,ContractionFrequency,median_max_FrSh
             FinalImage(:,:,t)=data{1,1}{t,1};
         end
         Metadata = char(data{1,2});
-        index = strfind(Metadata,'dAvgPeriodDiff=');
-        SamplingInterval = double(str2num(Metadata(index+15:index+23)))/1000;%(sec)      
+        index = strfind(Metadata,'dAvgPeriodDiff='); %index for average time sampling interval
+        index2 = strfind(Metadata,'Global dCalibration='); %index for global calibration
+        SamplingInterval = double(str2num(Metadata(index+15:index+23)))/1000;%(sec) 
+        PixelDistance = double(str2num(Metadata(index2+20:index2+25))); %micron/pixel
         clear data
         
     end
@@ -103,12 +110,18 @@ function [TrackingDistance_um,PixelDistance,ContractionFrequency,median_max_FrSh
         fprintf('Sampling Frequency is %d (Hz)\n',SAMPLE_FREQ);
         fprintf('Trace Duration is %d (sec)\n',TRACE_WIN*2.5);
 
-    % set display min and max
-
-    FirstFrame = Z(:,:,1);
-    Sorted_FirstFrame = sort(FirstFrame(:));
-    LUT_Max = Sorted_FirstFrame(round(size(Sorted_FirstFrame(:),1)*0.99));
-    twimshow1({FirstFrame},{[mode(Sorted_FirstFrame)-30 LUT_Max]}); % display invert and original image
+    % Auto windows the image by scaling the image to pixel intensities of mean +/- 2* standard deviation, then scales to 0 to 66000 
+    % This avoids errors from increased background and windows to uint16
+    Z=im2double(Z); %converts to double format, then reverts back to unit16 after scaling
+    ImgMean = mean(Z(:));
+    ImgStd = std(Z(:));
+    
+    for f=1:size(Z,3)
+        Z(:,:,f)=imadjust(Z(:,:,f),[(ImgMean-2*ImgStd) (ImgMean+2*ImgStd)]);
+    end
+    Z=uint16(Z*65535); %conversion back to uint16 format from double
+    FirstFrame=Z(:,:,1);
+    twimshow1({FirstFrame},{[0 65535]}); % display invert and original image (first frame)
     set(gcf, 'position', [10 500 1000 300]);
     
     % lable number 
@@ -126,7 +139,7 @@ function [TrackingDistance_um,PixelDistance,ContractionFrequency,median_max_FrSh
     hfigs = get(0, 'children');
     figure(size(hfigs(:),1));
     cd(dirOut)
-    saveas(size(hfigs(:),1), [filename '.eps']);
+    saveas(size(hfigs(:),1), [filename '.tif']);
     cd(Path)
     
 % Create ROI images as the dimention specified below
@@ -2082,7 +2095,8 @@ end
 function [z,Location_X,Location_Y] = CorrectOffset_YT(z,maxPossibleOffset)
 % Frame offset correction
 % maxPossibleOffset=20; %you expect at most 10 pixel offset
-chnkWidth = 1; %check frame interval. ex: every frame: chnkWidth = 1.
+%chnkWidth is the check frame interval. ex: every frame: chnkWidth = 1.
+chnkWidth = 1; 
 st=1; %starting frame
 
 % get a refernce from averaged 10 frames 

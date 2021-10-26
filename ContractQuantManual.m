@@ -52,7 +52,7 @@ function [TrackingDistance_um,PixelDistance,ContractionFrequency,median_max_FrSh
     Tif = 0;  %change this parameter to 1 for Tif file 0 for ND2 file
     PixelDistance = 0.16; %(um/pixel)
     SamplingInterval = 0.02; %(sec)
-    %Note SamplingInterval will be over-ridden by metadata if bio-formats
+    %Note SamplingInterval and PixelDistance will be over-ridden by metadata if bio-formats
     %metadata available from nd2 file.
     
     % Set the ROI size
@@ -89,7 +89,9 @@ function [TrackingDistance_um,PixelDistance,ContractionFrequency,median_max_FrSh
             FinalImage(:,:,t)=data{1,1}{t,1};
         end
         Metadata = char(data{1,2});
-        index = strfind(Metadata,'dAvgPeriodDiff=');
+        index = strfind(Metadata,'dAvgPeriodDiff='); %index for average time sampling interval
+        index2 = strfind(Metadata,'Global dCalibration='); %index for global calibration
+        PixelDistance = double(str2num(Metadata(index2+20:index2+25))); %micron/pixel
         SamplingInterval = double(str2num(Metadata(index+15:index+23)))/1000;%(sec)      
         clear data
         
@@ -109,14 +111,21 @@ function [TrackingDistance_um,PixelDistance,ContractionFrequency,median_max_FrSh
         fprintf('Sampling Interval is %.3f (ms)\n',SamplingInterval*1000);
         fprintf('Sampling Frequency is %d (Hz)\n',SAMPLE_FREQ);
         fprintf('Trace Duration is %d (sec)\n',TRACE_WIN*2.5);
+        fprintf('Trace Duration is %d (micron/pixel)\n',PixelDistance);
 
-    % set display min and max
-
-    FirstFrame = Z(:,:,1);
-    Sorted_FirstFrame = sort(FirstFrame(:));
-    LUT_Max = Sorted_FirstFrame(round(size(Sorted_FirstFrame(:),1)*0.99));
-    twimshow1({FirstFrame},{[mode(Sorted_FirstFrame)-30 LUT_Max]}); % display invert and original image
-%   twimshow1({FinalImage},{[mode(Sorted_FirstFrame)-20 LUT_Max]}); % display invert and original image
+    % Auto windows the image by scaling the image to pixel intensities of mean +/- 2* standard deviation, then scales to 0 to 66000 
+    % This avoids errors from increased background and windows to 16bit
+    % depth
+    Z=im2double(Z); %converts to double format, then reverts back to unit16 after scaling
+    ImgMean = mean(Z(:));
+    ImgStd = std(Z(:));
+    
+    for f=1:size(Z,3)
+        Z(:,:,f)=imadjust(Z(:,:,f),[(ImgMean-2*ImgStd) (ImgMean+2*ImgStd)]);
+    end
+    Z=uint16(Z*65535); %conversion back to uint16 format from double
+    FirstFrame=Z(:,:,1);
+    twimshow1({FirstFrame},{[0 65535]}); % display invert and original image (first frame)
     set(gcf, 'position', [10 500 1000 300]);
 
 % Set 2 tracking points with coordinates by manual selection
@@ -141,7 +150,7 @@ function [TrackingDistance_um,PixelDistance,ContractionFrequency,median_max_FrSh
     hfigs = get(0, 'children');
     figure(size(hfigs(:),1));
     cd(dirOut)
-    saveas(size(hfigs(:),1), [filename '.eps']);
+    saveas(size(hfigs(:),1), [filename '.tif']);
     cd(Path)
   
     % Create ROI images as the dimention specified below
@@ -157,8 +166,8 @@ function [TrackingDistance_um,PixelDistance,ContractionFrequency,median_max_FrSh
     % Use local feature to do crosscorrelation
     
     fprintf('Analyzing displacement\n');
-    for i = 1:size(LeftTrackPoint,1)
-        [ZZ,X,Y] = CorrectOffset_YT(ROI{i},60);
+    for i = 1:size(x,1)
+        [ZZ,X,Y] = CorrectOffset_YT(ROI{i},60,SamplingInterval);
         LocationX{i}=movmean(X,3);
         LocationY{i}=movmean(Y,3);
         ROI_Reg{i} = ZZ;
@@ -2100,16 +2109,22 @@ function twimshow1(z, cmap, datasetNames, curImInd)
     end
 end
 
-function [z,Location_X,Location_Y] = CorrectOffset_YT(z,maxPossibleOffset)
+function [z,Location_X,Location_Y,chnkWidth] = CorrectOffset_YT(z,maxPossibleOffset,SamplingInterval)
 % Frame offset correction
 % maxPossibleOffset=20; %you expect at most 10 pixel offset
-chnkWidth = 1; %check frame interval. ex: every frame: chnkWidth = 1.
-st=1; %starting frame
+%chnkWidth is the check frame interval. ex: every frame: chnkWidth = 1.
+%Increased error when time window is <20ms, so sets analysis width to 20ms 
+if SamplingInterval<0.02
+    chnkWidth=round(0.02/SamplingInterval);
+else
+    chnkWidth = 1; 
+end
+%st=1; %starting frame%delete if works
+st=chnkWidth; %starting frame
 
 % get a refernce from averaged 10 frames 
 % refMean = mean(z(:,:,st:(st+(10-1))),3);
-refMean = mean(z(:,:,st:st+3),3);
-st=st;%+chnkWidth;
+refMean = mean(z(:,:,st:(st+3*chnkWidth)),3); % reference frame for cross correlation is the average of the first 3 frames*chnkWidth (e.g at least first 60ms)
 
 while st<=size(z,3)
     testMean = mean( z(maxPossibleOffset:(end-maxPossibleOffset+1), maxPossibleOffset:(end-maxPossibleOffset+1), st:(st+(chnkWidth-1))), 3);
